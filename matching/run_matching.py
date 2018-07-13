@@ -1,8 +1,8 @@
 import cv2
 import numpy as np
 
-
-OBJECT_IMG      = "data/notebook/object_3.jpg"
+DRAW_MATCHES    = False
+OBJECT_IMG      = "data/notebook/object.jpg"
 ORIGINAL_IMG    = "data/notebook/original_2.jpg"
 
 
@@ -59,7 +59,7 @@ def match_images_SIFT(img1, img2):
         cv2.destroyAllWindows()
 
 
-def find_object(object_img, original_img):
+def find_object(object_img, original_img, draw_matches):
     sift = cv2.xfeatures2d.SIFT_create()
     keypts1, descr1 = sift.detectAndCompute(object_img, None)
     keypts2, descr2 = sift.detectAndCompute(original_img, None)
@@ -84,12 +84,13 @@ def find_object(object_img, original_img):
         pts = np.float32([ [0,0],[0,h-1],[w-1,h-1],[w-1,0] ]).reshape(-1,1,2)
         dst = cv2.perspectiveTransform(pts,M)
 
-        img2 = cv2.polylines(original_img, [np.int32(dst)],True,(100,250,200),3, cv2.LINE_AA)
+        out_img = cv2.polylines(original_img, [np.int32(dst)],True,(100,250,200),3, cv2.LINE_AA)
 
     else:
         matchesMask = None
 
-    out_img = cv2.drawMatchesKnn(object_img, keypts1, original_img, keypts2, good_matches, None, flags=2)
+    if draw_matches:
+        out_img = cv2.drawMatchesKnn(object_img, keypts1, original_img, keypts2, good_matches, None, flags=2)
 
     cv2.imshow('Feature matching (SIFT)', out_img)
     if cv2.waitKey(0) & 0xff == 27:
@@ -106,4 +107,4 @@ if __name__ == "__main__":
     # match_images_ORB(object_img, original_img)
     # match_images_SIFT(object_img, original_img)
 
-    find_object(object_img, original_img)
+    find_object(object_img, original_img, draw_matches=DRAW_MATCHES)
