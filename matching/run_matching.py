@@ -1,110 +1,76 @@
+"""
+Usage: run_matching.py <base> <object>...
+"""
+
+
 import cv2
+import os
 import numpy as np
-
-DRAW_MATCHES    = False
-OBJECT_IMG      = "data/notebook/object.jpg"
-ORIGINAL_IMG    = "data/notebook/original_2.jpg"
+from docopt import docopt
 
 
-def show_good_features(src_img):
-    img = src_img.copy()
-    
-    img_gray = np.float32(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
-    corners = np.int0(cv2.goodFeaturesToTrack(img_gray, 25, 0.01, 10))
-
-    for c in corners:
-        x, y = c.ravel()
-        cv2.circle(img, (x, y), 3, 255, -1)
-
-    cv2.imshow('Good features', img)
-
-    if cv2.waitKey(0) & 0xff == 27:
-        cv2.destroyAllWindows()
-
-
-def match_images_ORB(img1, img2):
-    orb = cv2.ORB_create()
-    keypts1, descr1 = orb.detectAndCompute(img1, None)
-    keypts2, descr2 = orb.detectAndCompute(img2, None)
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-    
-    matches = bf.match(descr1, descr2)
-    matches = sorted(matches, key = lambda x: x.distance)
-
-    no_best_matches = int(0.10 * len(matches))
-    print("{} matches found, selected {} best matches".format(len(matches), no_best_matches))
-    out_img = cv2.drawMatches(img1, keypts1, img2, keypts2, matches[:no_best_matches], None, flags=2)
-
-    cv2.imshow('Feature matching (ORB)', out_img)
-    if cv2.waitKey(0) & 0xff == 27:
-        cv2.destroyAllWindows()
-
-
-def match_images_SIFT(img1, img2):
+def find_object(base, obj, result):
+    # Find SIFT descriptors for both base and object images
     sift = cv2.xfeatures2d.SIFT_create()
-    keypts1, descr1 = sift.detectAndCompute(img1, None)
-    keypts2, descr2 = sift.detectAndCompute(img2, None)
+    keypts_base, descr_base = sift.detectAndCompute(base["image"], None)
+    keypts_obj, descr_obj = sift.detectAndCompute(obj["image"], None)
+    
 
-    bf = cv2.BFMatcher()
-    matches = bf.knnMatch(descr1, descr2, k=2)
+    # Create and execute brute-force k-nn matching on descriptors
+    FLANN_INDEX_KDTREE = 0
+    index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
+    search_params = dict(checks=50)   # or pass empty dictionary
+    flann = cv2.FlannBasedMatcher(index_params,search_params)
+    matches = flann.knnMatch(descr_obj, descr_base, k=2)
+    
+    # matches = cv2.BFMatcher().knnMatch(descr_obj, descr_base, k=2)
+    matches = [ [i] for i, j in matches if i.distance < 0.75*j.distance]
+    
+    if len(matches) > 10:
+        src_pts = np.float32([ keypts_obj[m[0].queryIdx].pt for m in matches]).reshape(-1,1,2)
+        dst_pts = np.float32([ keypts_base[m[0].trainIdx].pt for m in matches]).reshape(-1,1,2)
 
-    good_matches = []
-    for m, n in matches:
-        if m.distance < 0.75*n.distance:
-            good_matches.append([m])
+        M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
 
-    out_img = cv2.drawMatchesKnn(img1, keypts1, img2, keypts2, good_matches, None, flags=2)
-    cv2.imshow('Feature matching (SIFT)', out_img)
-    if cv2.waitKey(0) & 0xff == 27:
-        cv2.destroyAllWindows()
-
-
-def find_object(object_img, original_img, draw_matches):
-    sift = cv2.xfeatures2d.SIFT_create()
-    keypts1, descr1 = sift.detectAndCompute(object_img, None)
-    keypts2, descr2 = sift.detectAndCompute(original_img, None)
-
-    bf = cv2.BFMatcher()
-    matches = bf.knnMatch(descr1, descr2, k=2)
-
-    good_matches = []
-    for m, n in matches:
-        if m.distance < 0.75*n.distance:
-            good_matches.append([m])
-
-    MIN_MATCH_COUNT = 10
-    if len(good_matches) > MIN_MATCH_COUNT:
-        src_pts = np.float32([ keypts1[m[0].queryIdx].pt for m in good_matches]).reshape(-1,1,2)
-        dst_pts = np.float32([ keypts2[m[0].trainIdx].pt for m in good_matches]).reshape(-1,1,2)
-
-        M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC,5.0)
-        matchesMask = mask.ravel().tolist()
-
-        h, w, d = object_img.shape
+        h, w, d = obj["image"].shape
         pts = np.float32([ [0,0],[0,h-1],[w-1,h-1],[w-1,0] ]).reshape(-1,1,2)
-        dst = cv2.perspectiveTransform(pts,M)
+        dst = np.int32(cv2.perspectiveTransform(pts, M))
 
-        out_img = cv2.polylines(original_img, [np.int32(dst)],True,(100,250,200),3, cv2.LINE_AA)
-
+        matching_top_point = tuple(dst[np.argmin([x[0][1] for x in dst])][0])
+        result = cv2.polylines(result, [dst], True, (100,250,200), 1, cv2.LINE_AA)
+        cv2.putText(result, obj["name"], matching_top_point, cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.7, (255,255,255), 1)
     else:
-        matchesMask = None
+        print("Could not find any satisfying matches for {}".format(obj["name"]))
+        return False
 
-    if draw_matches:
-        out_img = cv2.drawMatchesKnn(object_img, keypts1, original_img, keypts2, good_matches, None, flags=2)
-
-    cv2.imshow('Feature matching (SIFT)', out_img)
+    matching_img = cv2.drawMatchesKnn(obj["image"], keypts_obj, base["image"], keypts_base, matches, None, flags=2)
+    
+    cv2.imshow('Feature matching for {}'.format(obj["name"]), matching_img)
     if cv2.waitKey(0) & 0xff == 27:
         cv2.destroyAllWindows()
+
+    return True
+
+
+# Create copy of base image at which foundings will be highlighted,
+# then try to find each object, mark it and display final result
+def find_objects(base, objects):    
+    result = base["image"].copy()
+    found_objects = []
+    for obj in objects:
+        if find_object(base, obj, result) == True:
+            found_objects.append(obj["name"])
+
+    cv2.imshow('Final result for {} (objects found: {})'.format(base["name"], ", ".join(found_objects)), result)
+    if cv2.waitKey(0) & 0xff == 27:
+        cv2.destroyAllWindows()    
 
 
 if __name__ == "__main__":
-    object_img = cv2.imread(OBJECT_IMG)
-    original_img = cv2.imread(ORIGINAL_IMG)
-    
-    # show_good_features(object_img)
-    # show_good_features(original_img)
+    arguments = docopt(__doc__)
+    print(arguments)
 
-    # match_images_ORB(object_img, original_img)
-    # match_images_SIFT(object_img, original_img)
+    base        = {"name": os.path.basename(arguments["<base>"]).split('.')[0], "image": cv2.imread(arguments["<base>"])}
+    objects     = [ {"name": os.path.basename(x).split('.')[0], "image": cv2.imread(x)} for x in arguments["<object>"]]
 
-    find_object(object_img, original_img, draw_matches=DRAW_MATCHES)
+    find_objects(base, objects)
